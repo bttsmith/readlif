@@ -8,6 +8,8 @@ from functools import reduce
 import os
 import io
 import cv2
+import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 
 def _read_long(handle):
@@ -170,7 +172,7 @@ class LifFile:
                 for d in dims:
                     # Length is not always present, need a try-except
                     dim_n = int(d.attrib["DimID"])
-                    dim_num_to_letter = {1: 'X', 2: 'Y', 3: 'Z', 4: 't'}
+                    dim_num_to_letter = {1: 'X', 2: 'Y', 3: 'Z', 4: 't', 10:'m'}
                     try:
                         len_n = float(d.attrib["Length"])
                         s = dim_num_to_letter[dim_n]
@@ -416,31 +418,244 @@ class LifFile:
             image_info = self.image_list[img_n]
             yield LifImageArr(image_info, offsets, self.filename)
             img_n += 1
+            
+            
+    def preview(self):
+        '''
+        Displays the first frame of every image along with image dimensions.
+        '''
+        for i, img in enumerate(self.get_iter_image()):
+            plt.imshow(img.get_frame(), cmap='gray')
+            plt.show()
+            print(str(i) +': '+ str(img))
+            
+         
+            
+    def export_photo(self, img, folder='', format = 'jpeg'):
+        '''
+        '''
+        import numpy as np
+        from PIL import Image
+        
+        if type(img) == int:
+            img = self.get_image(img)
+        print('Exporting Photo from ' + str(img))
+        
+        if folder == '':
+            # Get the directory path of the parent file
+            folder = os.path.dirname(self.filename)
+        
+        if format == 'jpeg':
+            ext = '.jpg'
+        elif format == 'jpg':
+            format = 'jpeg'
+            ext = '.jpg'
+        else:
+            ext = '.'+format
+        
+        
+        
+        # Combine the directory path and the desired filename
+        save_path = os.path.join(folder, img.name + ext)
+        
+        if img.dims[3] == 1:            
+            array = img.get_frame(z=0, t=0, c=0)
 
+            # Normalize the array to the range [0, 255]
+            normalized_array = (array - np.min(array)) * (255.0 / (np.max(array) - np.min(array)))
+            normalized_array = normalized_array.astype(np.uint8)
+
+            # Create a PIL Image object from the array
+            image = Image.fromarray(normalized_array)
+
+            # Save the image to the specified file
+            image.save(save_path, format=format)
+            
+
+        
+    def export_all_photos(self, folder = '', format = 'jpeg'):
+        '''
+        Exports every photo from a lif file.
+
+        Parameters
+        ----------
+        folder : TYPE, optional
+            DESCRIPTION. The default is ''.
+
+        Returns
+        -------
+        None.
+
+        '''
+        for img in self.get_iter_image():
+            #If there is only 1 frame, then export
+            if img.dims[3]==1:
+                self.export_photo(img, folder = folder, format = format)    
+        
+        
+    def export_video(self, img, folder='', format = '.mp4'):
+        '''
+        Exports every video from a lif file.
+
+        Parameters
+        ----------
+        folder : TYPE, optional
+            DESCRIPTION. The default is ''.
+
+        Returns
+        -------
+        None.
+
+        '''      
+        
+        if type(img) == int:
+            img = self.get_image(img)
+            
+        if folder == '':
+            folder = os.path.dirname(self.filename)
+            
+        if format[0] != '.':
+            format = '.'+format
+    
+        print('Exporting Video from ' + str(img))
+    
+        #If there is more than 1 frame, then export
+        if img.dims[3]>1:
+        
+            # Combine the directory path and the desired filename
+            video_name = os.path.join(folder, img.name)
+        
+            images = img.get_iter_t()
+            frame = img.get_frame(z=0, t=0, c=0)
+    
+            # setting the frame width, height width
+            # the width, height of first image
+            height, width = frame.shape
+            
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    
+            video = cv2.VideoWriter(video_name+format, fourcc, round(img.scale_n['t'],4), (width, height), isColor = False) 
+    
+            #Find mix and max on all frames in video
+            px_max = 0
+            px_min = 100000
+            # Appending the images to the video one by one
+            for image in img.get_iter_t():
+                loc_max = image.max()
+                loc_min = image.min()
+                if px_max<loc_max:
+                    px_max = loc_max
+                if px_min>loc_min:
+                    px_min = loc_min
+                  
+            #print(px_min, px_max)
+            for image in tqdm(img.get_iter_t(), desc = 'Writing frames...', total = img.dims.t):  
+                comp_im = (image-px_min).astype(float)/px_max*65535
+            
+                scaled_img = (comp_im/256).astype('uint8')
+                video.write(scaled_img)
+
+    
+            # Deallocating memories taken for window creation
+            cv2.destroyAllWindows() 
+            video.release()  # releasing the video generated
+    
     def export_all_videos(self, folder=''):
+        '''
+        Exports every video from a lif file.
+
+        Parameters
+        ----------
+        folder : TYPE, optional
+            DESCRIPTION. The default is ''.
+
+        Returns
+        -------
+        None.
+
+        '''
         for img in self.get_iter_image():
             #If there is more than 1 frame, then export
             if img.dims[3]>1:
-                print(img)
-                video_name = folder+img.name+'.avi'
+                self.export_video(img, folder = folder)
+
+    def export_all(self, folder = ''):
+        for i, img in enumerate(self.get_iter_image()):
+            if img.dims[3] == 1:
+                self.export_photo(img, folder)
+            if img.dims[3] > 1:
+                self.export_video(img, folder)
         
-                images = img.get_iter_t()
-                frame = img.get_frame(z=0, t=0, c=0)
+        print('Exported '+str(i)+' images and videos.')
         
-                # setting the frame width, height width
-                # the width, height of first image
-                height, width = frame.shape
         
-                video = cv2.VideoWriter(video_name, 0, img.scale_n['t'], (width, height), isColor = False) 
         
-                # Appending the images to the video one by one
-                for image in images:
-                    scaled_img = (image/256).astype('uint8')
-                    video.write(scaled_img)
+    def export(self, image = 0, folder = ''):
+    
+    
+        if type(image) == int:
+            img = self.get_image(image)
+        else:
+            img = image
         
-                # Deallocating memories taken for window creation
-                cv2.destroyAllWindows() 
-                video.release()  # releasing the video generated
+        (x, y, z, t, m) = img.dims
+        
+        if t>1:
+            self.export_video(image, folder)
+        #elif m = ?
+        #elif z = ?
+        else:
+            self.export_photo(image, folder)
+
+    def stitch(self, image, overlap_crop = 0.8):
+        '''
+        If the given image is a mosaic, perform stitching 
+        and return the stitched image.
+        
+        Note: I may need to adjust the logic depending on 
+        whether get_iter_m gets columns or rows first
+        
+        Parameters
+        ----------
+        image : int or LifImageArr
+            If an integer, will get_image from self.
+            If a LifImageArr, will work directly with it.
+        overlap_crop : float
+            Because Leica overlaps mosaic images, we need to take 
+            ~10% off each side of the image
+            
+        Returns
+        -------
+        numpy array of the stitched image.
+        
+        
+        ''' 
+        if type(image) is int:
+            image = self.get_image(image)
+        
+        mos = image.mosaic_position
+        if mos == []:
+            print("Image is not a Mosaic!")
+            return None
+        else:
+            tiles = image.get_iter_m()
+            npmos = np.array(mos)
+            nrows = int(np.max(npmos[:, 1]))+1 #+1 because of 0-indexing
+            ncols = int(np.max(npmos[:, 0]))+1
+            
+            imdata = ()
+            
+            for tile in tiles:
+                lim = int(tile.shape[0]*overlap_crop)
+                imdata = imdata + (tile[0:lim, 0:lim], )
+            
+            vstitch = []
+            for n in range(ncols): 
+                vstitch.append(np.vstack(imdata[n*nrows:(n*nrows+nrows)]))
+            stitched_im = np.hstack(vstitch)
+            
+            return stitched_im
+            
 
 class LifImageArr:
     """
@@ -532,7 +747,9 @@ class LifImageArr:
         self.settings = image_info["settings"]
 
     def __repr__(self):
-        return repr('LifImageArr object with dimensions: ' + str(self.dims))
+        string = 'LifImageArr object ('+self.name+') with dimensions: ' + str(self.dims)
+        
+        return repr(string)
 
     def _get_len_nondisplay_dims(self):
         non_display_dims_len = [self.dims_n[d] for d in self.dims_n.keys()
