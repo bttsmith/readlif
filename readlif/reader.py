@@ -10,6 +10,7 @@ import io
 import cv2
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from datetime import datetime
 
 
 def _read_long(handle):
@@ -166,7 +167,15 @@ class LifFile:
                 dims_dict = {int(d.attrib["DimID"]):
                              int(d.attrib["NumberOfElements"])
                              for d in dims}
-
+                
+                
+                timestampdata = item.findall("./Data/Image/TimeStampList")[0].text.split()
+                #Leica counts time in 1/10ths of milliseconds, and thinks it is in the 24th century....
+                #As a result, divide by 10^7 to get time in seconds, and then subtract out a few centries
+                ts_int_list = [int(hex_num, 16)/10000000-11644488000 for hex_num in timestampdata]
+                timestamps = [datetime.fromtimestamp(int_num).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3] for int_num in ts_int_list]
+                
+                
                 # Get the scale from each image
                 scale_dict = {}
                 for d in dims:
@@ -276,7 +285,8 @@ class LifFile:
                     "bit_depth": bit_depth,
                     "mosaic_position": m_pos_list,
                     "channel_as_second_dim": channel_as_second_dim,
-                    "settings": settings
+                    "settings": settings,
+                    "timestamps": timestamps,
                     # "metadata_xml": item
                 }
 
@@ -420,30 +430,58 @@ class LifFile:
             img_n += 1
             
             
-    def preview(self):
+    def preview(self, image = None):
         '''
         Displays the first frame of every image along with image dimensions.
         '''
-        for i, img in enumerate(self.get_iter_image()):
-            plt.imshow(img.get_frame(), cmap='gray')
+        if image is None:
+            for i, img in enumerate(self.get_iter_image()):
+                plt.imshow(img.get_frame(), cmap='gray')
+                plt.axis('off')
+                plt.axis('tight')
+                plt.axis('image')
+                plt.show()
+                print(str(i) +': '+ str(img))
+        elif type(image) is int:
+            plt.imshow(self.get_image(image).get_frame(), cmap='gray')
+            plt.axis('off')
+            plt.axis('tight')
+            plt.axis('image')
             plt.show()
             print(str(i) +': '+ str(img))
-            
          
             
-    def export_photo(self, img, folder='', format = 'jpeg'):
+    def export_photo(self, img, folder='', format = 'png', 
+                    scale_bar = 'upper right', export = True,
+                    **kwargs):
         '''
         '''
         import numpy as np
-        from PIL import Image
         
         if type(img) == int:
             img = self.get_image(img)
-        print('Exporting Photo from ' + str(img))
+            
+        
+        if img.dims[3] != 1:
+            print('Image is not a photo')
+            return
+
+        
+        array = img.get_frame(z=0, t=0, c=0)
+
+        # Normalize the array to the range [0, 255]
+        normalized_array = (array - np.min(array)) * (255.0 / (np.max(array) - np.min(array)))
+        normalized_array = normalized_array.astype(np.uint8)
+        
+        if export: print('Exporting Photo from ' + str(img))
+        
         
         if folder == '':
             # Get the directory path of the parent file
             folder = os.path.dirname(self.filename)
+        
+        if format[0] == '.':
+            format = format[1:]
         
         if format == 'jpeg':
             ext = '.jpg'
@@ -452,25 +490,74 @@ class LifFile:
             ext = '.jpg'
         else:
             ext = '.'+format
-        
-        
-        
+            
         # Combine the directory path and the desired filename
         save_path = os.path.join(folder, img.name + ext)
         
-        if img.dims[3] == 1:            
-            array = img.get_frame(z=0, t=0, c=0)
-
-            # Normalize the array to the range [0, 255]
-            normalized_array = (array - np.min(array)) * (255.0 / (np.max(array) - np.min(array)))
-            normalized_array = normalized_array.astype(np.uint8)
-
-            # Create a PIL Image object from the array
-            image = Image.fromarray(normalized_array)
-
-            # Save the image to the specified file
-            image.save(save_path, format=format)
+        self.save_photo(normalized_array, img, save_path, scale_bar, kwargs = kwargs)
+        
+    def save_photo(self, photo, img, save_path, scale_bar, **kwargs):
+        import matplotlib.pyplot as plt
+        
+        #Make Plot
+        plt.ioff()
+        fig, ax = plt.subplots()
+        ax.axis('off')
+        ax.imshow(photo, cmap='gray')
+        
+        #Add scale bar        
+        if scale_bar:
+            from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+            import matplotlib.font_manager as fm 
+                        
+            #Determine size of bar and bar label
+            if 'bar_size' in kwargs:
+                bar_size = kwargs.pop('bar_size')
+            else:
+                bar_size = 0.1
             
+            scale = img.scale_n['X']
+            size = photo.shape[0]
+            
+            px_goal = int(size*bar_size)
+            px_range = int(size*bar_size*0.2)
+            
+            px_size = min(range(px_goal - px_range, px_goal + px_range), 
+                          key=lambda p: (p/scale) % 10)
+                                    
+            real_size = round(px_size/scale/10)*10
+            label = f"{real_size:.0f} $\mu$m"
+                        
+            #Get plotting parameters
+            if type(scale_bar) is not str:
+                scale_bar = 'upper right'
+                
+            if 'bar_label_size' in kwargs:
+                bar_label_size = kwargs.pop('bar_label_size')
+            else:
+                bar_label_size = 16
+            if 'upper' in scale_bar:
+                label_top = True
+            else:
+                label_top = False
+            if 'bar_color' in kwargs:
+                bar_color = kwargs.pop('bar_color')
+            else:
+                bar_color = 'white'
+            
+            # Setting the font properties for the scale bar label
+            fontprops = fm.FontProperties(size=bar_label_size)
+            # Creating a scale bar with specified properties
+            scalebar = AnchoredSizeBar(ax.transData, px_size, label, scale_bar, 
+                                       pad=0.1, color=bar_color, frameon=False, 
+                                       size_vertical=1, fontproperties=fontprops, 
+                                       label_top = label_top) 
+            # Adding the scale bar to the axes
+            ax.add_artist(scalebar) 
+        
+        fig.savefig(save_path,bbox_inches='tight',pad_inches = 0, dpi = 300)
+            
+        return fig, ax
 
         
     def export_all_photos(self, folder = '', format = 'jpeg'):
@@ -507,6 +594,7 @@ class LifFile:
         None.
 
         '''      
+        #TODO: Export options other than mp4....
         
         if type(img) == int:
             img = self.get_image(img)
@@ -522,43 +610,72 @@ class LifFile:
         #If there is more than 1 frame, then export
         if img.dims[3]>1:
         
-            # Combine the directory path and the desired filename
-            video_name = os.path.join(folder, img.name)
+            if format == '.mp4':
+                # Combine the directory path and the desired filename
+                video_name = os.path.join(folder, img.name)
+                
+                images = img.get_iter_t()
+                frame = img.get_frame(z=0, t=0, c=0)
         
-            images = img.get_iter_t()
-            frame = img.get_frame(z=0, t=0, c=0)
+                # setting the frame width, height width
+                # the width, height of first image
+                height, width = frame.shape
+                
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        
+                video = cv2.VideoWriter(video_name+format, fourcc, round(img.scale_n['t'],4), (width, height), isColor = False) 
+        
+                #Find mix and max on all frames in video
+                #Used to maximize the dynamic range in the video
+                px_max = 0
+                px_min = 100000
+                
+                for image in img.get_iter_t():
+                    loc_max = image.max()
+                    loc_min = image.min()
+                    if px_max<loc_max:
+                        px_max = loc_max
+                    if px_min>loc_min:
+                        px_min = loc_min
+                      
+                # Appending the images to the video one by one
+                for image in tqdm(img.get_iter_t(), desc = 'Writing frames...', total = img.dims.t):  
+                    comp_im = (image-px_min).astype(float)/px_max*65535
+                
+                    scaled_img = (comp_im/256).astype('uint8')
+                    video.write(scaled_img)
     
-            # setting the frame width, height width
-            # the width, height of first image
-            height, width = frame.shape
-            
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    
-            video = cv2.VideoWriter(video_name+format, fourcc, round(img.scale_n['t'],4), (width, height), isColor = False) 
-    
-            #Find mix and max on all frames in video
-            px_max = 0
-            px_min = 100000
-            # Appending the images to the video one by one
-            for image in img.get_iter_t():
-                loc_max = image.max()
-                loc_min = image.min()
-                if px_max<loc_max:
-                    px_max = loc_max
-                if px_min>loc_min:
-                    px_min = loc_min
-                  
-            #print(px_min, px_max)
-            for image in tqdm(img.get_iter_t(), desc = 'Writing frames...', total = img.dims.t):  
-                comp_im = (image-px_min).astype(float)/px_max*65535
-            
-                scaled_img = (comp_im/256).astype('uint8')
-                video.write(scaled_img)
-
-    
-            # Deallocating memories taken for window creation
-            cv2.destroyAllWindows() 
-            video.release()  # releasing the video generated
+        
+                # Deallocating memories taken for window creation
+                cv2.destroyAllWindows() 
+                video.release()  # releasing the video generated
+            elif format == '.jpg':
+                
+                # Combine the directory path and the desired filename
+                video_folder = os.path.join(folder, img.name)
+                
+                os.mkdir(video_folder)
+                
+                if format[0] == '.':
+                    format = format[1:]
+                
+                if format == 'jpeg':
+                    ext = '.jpg'
+                elif format == 'jpg':
+                    format = 'jpeg'
+                    ext = '.jpg'
+                    
+                # Combine the directory path and the desired filename
+                
+                images = img.get_iter_t()
+                
+                for i, image in enumerate(images):
+                    save_path = os.path.join(folder, f'Frame {i}' + ext)
+                    self.save_photo(image, video_folder, '.jpg', scale_bar=False)
+                    
+                
+                
+                
     
     def export_all_videos(self, folder=''):
         '''
